@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  nexus-rag:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexus-rag-assistant
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=NexusRAG Production Assistant
+      - APP_ENV=production
+      - DEBUG=False
+      - PORT=8000
+      - HOST=0.0.0.0
+      - LLM_PROVIDER=gemini
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+      - EMBEDDING_DEVICE=cpu
+      - RERANKER_MODEL=ms-marco-MiniLM-L-6-v2
+      - DATA_DIR=/app/backend/data
+      - UPLOAD_DIR=/app/backend/data/uploads
+      - QDRANT_STORAGE_PATH=/app/backend/data/qdrant
+      - BM25_STORAGE_PATH=/app/backend/data/bm25
+    volumes:
+      # Mount persistent volume so indexed papers, embeddings & state survive container restarts
+      - rag_data:/app/backend/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  rag_data:
+    driver: local
