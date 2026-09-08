@@ -18,10 +18,12 @@ from app.rag.state import RAGGraphState
 SYNTHESIS_SYSTEM_PROMPT = """You are a focused, authoritative AI Research Assistant synthesizing evidence from scientific literature.
 
 Strict Core Rules:
-1. Answer ONLY what the researcher asks. Do NOT include pleasantries, conversational filler, or introductory preambles (e.g., avoid "Based on the provided documents...", "Here is an analysis...").
-2. Do NOT add unsolicited background history or repetitive summary conclusions unless explicitly requested.
-3. Every factual claim MUST be followed by an exact citation in the format: [{filename}, p. {page}] (e.g., [{filename}, p. 3]).
-4. If the provided context lacks sufficient evidence to answer the question, state that directly in one concise sentence without speculating.
+1. Answer ONLY what the researcher asks. Do NOT include pleasantries, conversational filler, or introductory preambles (e.g., NEVER use "Based on your inquiry...", "According to your query...", "Here is what you asked...", "In our analysis...").
+2. NEVER use markdown hashtag headers (e.g., DO NOT use '#', '##', '###', or '####'). Output clean text, bullet points, or tables without hashtag headings.
+3. NEVER use first-person or second-person conversational pronouns ("I", "we", "our", "you", "your", "like"). Write in an objective, scholarly third-person tone directly stating facts from the literature.
+4. Do NOT add unsolicited background history or repetitive summary conclusions unless explicitly requested.
+5. Every factual claim MUST be followed by an exact citation in the format: [{filename}, p. {page}] (e.g., [{filename}, p. 3]).
+6. If the provided context lacks sufficient evidence to answer the question, state that directly in one concise sentence without speculating.
 
 Researcher Output Format Preferences:
 {format_instructions}
@@ -41,21 +43,26 @@ def _get_format_instructions(style: str = "direct", detail_level: str = "concise
     
     if style == "direct":
         instructions.append("- Provide a direct, concise, to-the-point answer answering precisely what was asked.")
-        instructions.append("- Cut all unnecessary filler and background; prioritize immediate clarity.")
+        instructions.append("- Cut all unnecessary filler, conversational pronouns ('your', 'I', 'we', 'our', 'like'), and background; prioritize immediate clarity.")
+        instructions.append("- Do NOT use markdown hashtag headers (#, ##, ###).")
     elif style == "bullets":
         instructions.append("- Present the answer strictly as clean, structured bullet points.")
         instructions.append("- Each bullet must state a key finding or fact followed by its exact citation.")
+        instructions.append("- Do NOT use markdown hashtag headers (#, ##, ###) or conversational introductory sentences.")
     elif style == "table":
         instructions.append("- Format comparisons, methods, mechanisms, or metrics in a clear Markdown table with headers.")
         instructions.append("- Include a column for Source & Page citation.")
         instructions.append("- Follow the table with 2-3 concise bullet points summarizing takeaways.")
+        instructions.append("- Do NOT use markdown hashtag headers (#, ##, ###).")
     elif style == "executive":
-        instructions.append("- Executive Summary: 2-3 high-level sentences directly answering the core inquiry.")
+        instructions.append("- Executive Summary: 2-3 high-level sentences directly answering the core inquiry without introductory filler.")
         instructions.append("- Follow with 3 bulleted key takeaways with page citations.")
+        instructions.append("- Do NOT use markdown hashtag headers (#, ##, ###).")
     elif style == "detailed":
-        instructions.append("- Provide a comprehensive academic analysis examining methodology, mechanisms, and nuances from the literature.")
+        instructions.append("- Provide an objective academic analysis examining methodology, mechanisms, and nuances directly from the literature.")
+        instructions.append("- Do NOT use conversational pronouns or markdown hashtag headers.")
     else:
-        instructions.append("- Answer directly, concisely, and factually without introductory fluff.")
+        instructions.append("- Answer directly, concisely, and factually without introductory fluff or hashtag headers.")
 
     if detail_level == "concise":
         instructions.append("- Detail Level: High conciseness. Keep length tight and focused.")
@@ -213,7 +220,7 @@ class RAGReasoningGraph:
         if self.synthesis_chain:
             try:
                 first_chunk = chunks[0].chunk
-                answer = self.synthesis_chain.invoke({
+                raw_answer = self.synthesis_chain.invoke({
                     "context": context,
                     "chat_history": formatted_history,
                     "query": query,
@@ -221,19 +228,61 @@ class RAGReasoningGraph:
                     "page": first_chunk.page_number,
                     "format_instructions": format_instructions
                 }).strip()
+                answer = self._clean_synthesis_output(raw_answer)
                 reasoning.append(f"Generated synthesis tailored to style '{style}' ({detail_level}).")
             except Exception as e:
                 logger.warning("LLM synthesis error: %s. Using structured fallback synthesis.", e)
-                answer = self._generate_fallback_synthesis(query, chunks, style, detail_level)
+                answer = self._clean_synthesis_output(self._generate_fallback_synthesis(query, chunks, style, detail_level))
                 reasoning.append("Generated direct evidence synthesis (fallback mode).")
         else:
-            answer = self._generate_fallback_synthesis(query, chunks, style, detail_level)
+            answer = self._clean_synthesis_output(self._generate_fallback_synthesis(query, chunks, style, detail_level))
             reasoning.append("Generated direct evidence synthesis (offline mode).")
 
         return {
             "answer": answer,
             "reasoning_steps": reasoning
         }
+
+    @staticmethod
+    def _clean_synthesis_output(text: str) -> str:
+        """
+        Removes unwanted markdown hashtag headers (#, ##, ###) and conversational
+        pronoun/filler sentences ('your', 'I', 'we', 'our', 'like').
+        """
+        if not text:
+            return ""
+
+        lines = text.split("\n")
+        cleaned_lines = []
+
+        conversational_prefixes = [
+            r"^(?:based on (?:your|the) (?:query|question|inquiry|request|documents?)|according to your (?:query|question|request)|in response to your (?:query|question)|here is (?:what you asked|the answer|the synthesis|the summary)|as (?:per )?your (?:request|query)|to answer your question)[\s:,.-]*",
+            r"^(?:i (?:have |can )?(?:analyzed|found|observed|noted|gathered|synthesized)|we (?:can |have )?(?:see|observe|found|analyzed|noted)|our (?:analysis|findings?|investigation) (?:shows?|indicates?|reveals?)|like (?:we |mentioned |shown |discussed ))[\s:,.-]*",
+        ]
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                cleaned_lines.append("")
+                continue
+
+            # Skip generic hashtag header lines completely
+            if re.match(r"^#{1,6}\s*(?:answer|summary|findings|key findings|key takeaways|executive summary|overview|analysis)?[:\s]*$", stripped, re.IGNORECASE):
+                continue
+
+            # Strip leading hashtags from any other line
+            stripped = re.sub(r"^#{1,6}\s*", "", stripped)
+
+            # Strip conversational filler prefixes
+            for pat in conversational_prefixes:
+                stripped = re.sub(pat, "", stripped, flags=re.IGNORECASE).strip()
+
+            if stripped:
+                cleaned_lines.append(stripped)
+
+        result = "\n".join(cleaned_lines).strip()
+        result = re.sub(r"\n{3,}", "\n\n", result)
+        return result
 
     @staticmethod
     def _clean_sentence(text: str) -> str:
@@ -351,11 +400,10 @@ class RAGReasoningGraph:
 
         # Format according to style
         if style == "bullets":
-            lead_doc = unique_scored[0][2].filename.replace('.pdf', '')
-            lines = [f"Based on the investigation in **{lead_doc}**, here are the key findings directly addressing your inquiry:\n"]
+            lines = []
             limit = 3 if detail_level == "concise" else 5
             for _, sent, c in unique_scored[:limit]:
-                lines.append(f"- **Key Finding (p. {c.page_number})**: {sent} `[{c.filename}, p. {c.page_number}]`")
+                lines.append(f"- {sent} `[{c.filename}, p. {c.page_number}]`")
             return "\n".join(lines)
 
         if style == "table":
@@ -373,14 +421,13 @@ class RAGReasoningGraph:
             lead_sent = unique_scored[0][1]
             lead_chunk = unique_scored[0][2]
             lines = [
-                f"**Executive Summary**: {lead_sent} `[{lead_chunk.filename}, p. {lead_chunk.page_number}]`\n",
-                "**Key Takeaways**:"
+                f"{lead_sent} `[{lead_chunk.filename}, p. {lead_chunk.page_number}]`\n"
             ]
             for _, sent, c in unique_scored[1:4]:
                 lines.append(f"- {sent} `[{c.filename}, p. {c.page_number}]`")
             return "\n".join(lines)
 
-        # Default: direct & cohesive conversational paragraph
+        # Default: direct & cohesive objective text
         lead_chunk = unique_scored[0][2]
         lead_text = unique_scored[0][1]
         supporting_items = []
@@ -391,7 +438,7 @@ class RAGReasoningGraph:
 
         parts = [f"{lead_text} `[{lead_chunk.filename}, p. {lead_chunk.page_number}]`"]
         for sent, c in supporting_items:
-            parts.append(f"Furthermore, {sent} `[{c.filename}, p. {c.page_number}]`")
+            parts.append(f"{sent} `[{c.filename}, p. {c.page_number}]`")
 
         return " ".join(parts)
 

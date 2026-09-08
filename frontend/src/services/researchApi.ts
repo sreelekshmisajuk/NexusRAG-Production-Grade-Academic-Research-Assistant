@@ -98,11 +98,18 @@ export const researchApi = {
       };
     });
 
+    // Clean unwanted markdown hashtag headers and conversational fluff like 'your', 'I', 'we', 'our', 'like'
+    const cleanedRaw = String(res.answer || '')
+      .replace(/^#{1,6}\s*(?:answer|summary|findings|key findings|key takeaways|executive summary|overview|analysis)?[:\s]*/gim, '')
+      .replace(/^#{1,6}\s*/gm, '')
+      .replace(/^(?:based on (?:your|the) (?:query|question|inquiry|request)|according to your (?:query|question|request)|in response to your (?:query|question)|here is (?:what you asked|the answer|the synthesis)|as (?:per )?your (?:request|query)|in our analysis|our analysis (?:shows|indicates)|i (?:found|have analyzed|can see)|like we (?:discussed|observed)|like mentioned)[\s:,.-]*/gim, '')
+      .trim();
+
     // The synthesis service returns provenance as `[filename, p. N]`, while the
     // chat renderer uses `[[N]](cite:N)` to display an interactive citation chip.
     // Convert only citations that were verified and returned with this response;
     // leave any unrecognised bracketed text untouched.
-    const formattedAnswer = String(res.answer || '')
+    const formattedAnswer = cleanedRaw
       .replace(/\[([^\[\]\r\n]+?),\s*(?:p|page)\.?\s*(\d+)\]/gi, (fullMatch, filename, page) => {
         const citation = mappedCitations.find(
           (item) =>
